@@ -28,6 +28,8 @@
 #include "dock.h"
 #include "preview_update.h"
 #include "gettext.h"
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include <gdk/gdkx.h>
 #define SN_API_NOT_YET_FROZEN
@@ -203,6 +205,22 @@ static gboolean prop_get_string_utf8(Window win, Atom prop, gchar **ret)
     return FALSE;
 }
 
+static int file_test (char *filename)
+{
+    int ret = 0;
+    int handle = open (filename, O_RDONLY);
+    if (handle)
+    {
+        struct stat statbuf;
+        if (fstat (handle, &statbuf) == 0)
+        {
+            if (statbuf.st_size > 0) ret = 1;
+        }
+        close (handle);
+    }
+    return ret;
+}
+
 int main(int argc, char **argv)
 {
     gchar *p;
@@ -250,17 +268,48 @@ int main(int argc, char **argv)
     }
 
     xmlIndentTreeOutput = 1;
-    if (!((obc_config_file &&
-           obt_xml_load_file(parse_i, obc_config_file, "openbox_config")) ||
-          obt_xml_load_config_file(parse_i, "openbox", "rc.xml",
-                                   "openbox_config")))
+    gboolean loaded = FALSE;
+    if (obc_config_file)
     {
-        obconf_error(_("Failed to load an rc.xml. You have probably failed to install Openbox properly."), TRUE);
-        exit_with_error = TRUE;
+        // is the config file in XDG_CONFIG_HOME? if so, also load any fallback with the same name in XDG_CONFIG_DIRS[0]
+        char *hpath = g_build_filename (g_get_user_config_dir (), "openbox", NULL);
+        char *fpath = g_path_get_dirname (obc_config_file);
+        if (!g_strcmp0 (hpath, fpath))
+        {
+            const gchar * const *config_dirs = g_get_system_config_dirs ();
+            char *fname = g_path_get_basename (obc_config_file);
+            char *global_file = g_build_filename (config_dirs[0], "openbox", fname, NULL);
+            if (file_test (global_file) && obt_xml_load_file (parse_i, global_file, "openbox_config"))
+            {
+                doc = obt_xml_doc (parse_i);
+                root = obt_xml_root (parse_i);
+                loaded = TRUE;
+            }
+            g_free (global_file);
+            g_free (fname);
+        }
+        g_free (fpath);
+        g_free (hpath);
+
+        if (file_test (obc_config_file) && obt_xml_load_file (parse_i, obc_config_file, "openbox_config"))
+        {
+            doc = obt_xml_doc (parse_i);
+            root = obt_xml_root (parse_i);
+            loaded = TRUE;
+        }
     }
-    else {
-        doc = obt_xml_doc(parse_i);
-        root = obt_xml_root(parse_i);
+    if (!loaded)
+    {
+        if (obt_xml_load_config_file(parse_i, "openbox", "rc.xml", "openbox_config"))
+        {
+            doc = obt_xml_doc (parse_i);
+            root = obt_xml_root (parse_i);
+        }
+        else
+        {
+            obconf_error (_("Failed to load an rc.xml. You have probably failed to install Openbox properly."), TRUE);
+            exit_with_error = TRUE;
+        }
     }
 
     /* look for parsing errors */
